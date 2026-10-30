@@ -1,0 +1,1 @@
+"""Kudos application package."""

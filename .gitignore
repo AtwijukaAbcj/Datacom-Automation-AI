@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+kudos.sqlite3
+kudos.sqlite3-shm
+kudos.sqlite3-wal
+.venv/
+.env

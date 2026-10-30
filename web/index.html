@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Datacom Kudos</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; color: #1f2937; background: #f4f7fb; }
+    body { max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { color: #123b65; }
+    section, article { background: white; border: 1px solid #d8e1eb; border-radius: 12px; padding: 1rem; margin: 1rem 0; }
+    label { display: block; font-weight: 650; margin: .75rem 0 .25rem; }
+    input, select, textarea, button { box-sizing: border-box; font: inherit; padding: .65rem; width: 100%; border: 1px solid #9aabba; border-radius: 6px; }
+    textarea { min-height: 110px; resize: vertical; }
+    button { cursor: pointer; background: #155e9a; color: white; border: 0; margin-top: .75rem; }
+    button.secondary { background: #475569; }
+    .muted { color: #5b6877; }
+    .actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .actions button { width: auto; }
+    #status { min-height: 1.5rem; }
+    @media (max-width: 520px) { body { margin: 1rem auto; } section, article { padding: .8rem; } }
+  </style>
+</head>
+<body>
+  <h1>Give Kudos</h1>
+  <p class="muted">Recognize a colleague with a short message of appreciation.</p>
+  <section aria-labelledby="auth-heading">
+    <h2 id="auth-heading">Local demo access</h2>
+    <label for="token">Demo bearer token</label>
+    <input id="token" type="password" autocomplete="off" aria-describedby="demo-note">
+    <p id="demo-note" class="muted">Demo only. In the employee portal, authentication is provided by SSO.</p>
+    <button id="connect">Connect and load feed</button>
+  </section>
+  <p id="status" role="status" aria-live="polite"></p>
+  <main>
+    <section>
+      <h2>Send kudos</h2>
+      <form id="composer">
+        <label for="recipient-search">Find a colleague</label>
+        <input id="recipient-search" type="search" autocomplete="off" placeholder="Search active colleagues" disabled>
+        <label for="recipient">Colleague</label>
+        <select id="recipient" required disabled>
+          <option value="">Connect to load colleagues</option>
+        </select>
+        <label for="message">Message <span id="remaining" class="muted">500 characters remaining</span></label>
+        <textarea id="message" maxlength="500" required disabled></textarea>
+        <button id="submit" disabled>Send kudos</button>
+      </form>
+    </section>
+    <section>
+      <h2>Recent kudos</h2>
+      <div id="feed"></div>
+      <button id="more" class="secondary" hidden>Load more</button>
+    </section>
+    <section id="moderation" hidden>
+      <h2>Moderation queue</h2>
+      <div id="moderation-feed"></div>
+    </section>
+  </main>
+  <script>
+    const tokenInput = document.querySelector("#token");
+    const statusNode = document.querySelector("#status");
+    const recipientSelect = document.querySelector("#recipient");
+    const recipientSearch = document.querySelector("#recipient-search");
+    const messageInput = document.querySelector("#message");
+    const feedNode = document.querySelector("#feed");
+    const moderationSection = document.querySelector("#moderation");
+    const moderationNode = document.querySelector("#moderation-feed");
+    const moreButton = document.querySelector("#more");
+    let cursor = null;
+    let isModerator = false;
+
+    async function api(path, options = {}) {
+      const headers = { Authorization: `Bearer ${tokenInput.value}`, ...(options.headers || {}) };
+      if (options.body) headers["Content-Type"] = "application/json";
+      const response = await fetch(path, { ...options, headers });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+      return result;
+    }
+
+    function showStatus(message) {
+      statusNode.textContent = message;
+    }
+
+    async function loadRecipients(query = "") {
+      const params = new URLSearchParams();
+      if (query) params.set("query", query);
+      const result = await api(`/api/employees?${params}`);
+      const selected = recipientSelect.value;
+      recipientSelect.replaceChildren(new Option("Choose a colleague", ""));
+      result.items.forEach((employee) => {
+        recipientSelect.add(new Option(employee.display_name, employee.employee_id));
+      });
+      if (result.items.some((employee) => employee.employee_id === selected)) {
+        recipientSelect.value = selected;
+      }
+    }
+
+    function renderItem(item, target, moderator = false) {
+      const card = document.createElement("article");
+      const heading = document.createElement("strong");
+      heading.textContent = `${item.sender_name} gave kudos to ${item.recipient_name}`;
+      const message = document.createElement("p");
+      message.textContent = item.message;
+      const time = document.createElement("small");
+      time.className = "muted";
+      time.textContent = new Date(item.created_at).toLocaleString();
+      card.append(heading, message, time);
+      if (moderator) {
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const actionNames = item.is_visible ? ["hide", "delete"] : ["restore", "delete"];
+        actionNames.forEach((action) => {
+          const button = document.createElement("button");
+          button.className = "secondary";
+          button.type = "button";
+          button.textContent = action[0].toUpperCase() + action.slice(1);
+          button.addEventListener("click", () => moderate(item.kudos_id, action));
+          actions.append(button);
+        });
+        card.append(actions);
+      }
+      target.append(card);
+    }
+
+    async function loadModerationQueue() {
+      moderationNode.replaceChildren();
+      try {
+        const result = await api("/api/moderation/kudos");
+        isModerator = true;
+        moderationSection.hidden = false;
+        if (!result.items.length) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No hidden kudos awaiting review.";
+          moderationNode.append(empty);
+        }
+        result.items.forEach((item) => renderItem(item, moderationNode, true));
+        return true;
+      } catch (error) {
+        isModerator = false;
+        moderationSection.hidden = true;
+        return false;
+      }
+    }
+
+    async function moderate(kudosId, action) {
+      try {
+        if (action === "delete" && !confirm("Permanently delete this kudos message?")) return;
+        const endpoint = `/api/kudos/${kudosId}${action === "delete" ? "" : `/${action}`}`;
+        await api(endpoint, { method: action === "delete" ? "DELETE" : "POST" });
+        cursor = null;
+        await loadFeed();
+        await loadModerationQueue();
+        showStatus({
+          hide: "Kudos hidden.",
+          restore: "Kudos restored.",
+          delete: "Kudos deleted.",
+        }[action]);
+      } catch (error) {
+        showStatus(error.message);
+      }
+    }
+
+    async function loadFeed(append = false) {
+      const params = new URLSearchParams({ limit: "20" });
+      if (append && cursor) params.set("cursor", cursor);
+      const result = await api(`/api/kudos?${params}`);
+      if (!append) feedNode.replaceChildren();
+      result.items.forEach((item) => renderItem(item, feedNode, isModerator));
+      cursor = result.next_cursor;
+      moreButton.hidden = !cursor;
+      if (!result.items.length && !append) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "No kudos yet. Be the first to recognize a colleague!";
+        feedNode.append(empty);
+      }
+    }
+
+    document.querySelector("#connect").addEventListener("click", async () => {
+      try {
+        await loadRecipients();
+        recipientSelect.disabled = false;
+        recipientSearch.disabled = false;
+        messageInput.disabled = false;
+        document.querySelector("#submit").disabled = false;
+        cursor = null;
+        await loadModerationQueue();
+        await loadFeed();
+        showStatus("Connected.");
+      } catch (error) {
+        showStatus(error.message);
+      }
+    });
+
+    let searchTimeout;
+    recipientSearch.addEventListener("input", () => {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => {
+        loadRecipients(recipientSearch.value).catch((error) => showStatus(error.message));
+      }, 200);
+    });
+
+    messageInput.addEventListener("input", () => {
+      document.querySelector("#remaining").textContent =
+        `${500 - messageInput.value.length} characters remaining`;
+    });
+
+    document.querySelector("#composer").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        await api("/api/kudos", {
+          method: "POST",
+          body: JSON.stringify({
+            recipient_id: recipientSelect.value,
+            message: messageInput.value,
+          }),
+        });
+        messageInput.value = "";
+        document.querySelector("#remaining").textContent = "500 characters remaining";
+        cursor = null;
+        await loadFeed();
+        showStatus("Kudos sent!");
+      } catch (error) {
+        showStatus(error.message);
+      }
+    });
+
+    moreButton.addEventListener("click", async () => {
+      try {
+        await loadFeed(true);
+        showStatus("");
+      } catch (error) {
+        showStatus(error.message);
+      }
+    });
+  </script>
+</body>
+</html>
