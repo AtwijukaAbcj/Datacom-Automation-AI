@@ -223,7 +223,9 @@ class KudosHttpTests(unittest.TestCase):
         with urlopen(self.base_url + "/") as response:
             html = response.read().decode()
         self.assertEqual(response.status, 200)
-        self.assertIn("<title>Datacom Kudos</title>", html)
+        self.assertIn("<title>Kudos | Datacom</title>", html)
+        self.assertIn("Celebrate great work.", html)
+        self.assertIn("Give someone kudos", html)
 
     def test_api_creates_kudos_and_returns_feed(self):
         status, created = self.request(
